@@ -3,55 +3,95 @@ import cv2  # OpenCV for video processing
 from flask_cors import CORS
 from ultralytics import YOLO
 import supervision as sv
-
 app = Flask(__name__)
 CORS(app)
-
-detectionStatus = 1  # Global variable to control the detection status
-
+detectionStatus = 0  # Global variable to control the detection status
+location = []  # Global variable to store the location
+left = 0
+middle = 0
+right = 0
+cam = False
+cap =None
 def detection():
-    global detectionStatus
-    cap = cv2.VideoCapture(0)  # Start capturing the video
+    global detectionStatus, location, left, middle, right, cam, cap
     model = YOLO("bestv2.pt")
     i = 1
     while True:
-        if detectionStatus == 1:
+        left = 0
+        middle = 0
+        right = 0
+        if cap is None:
+            if(cam):
+                cap = cv2.VideoCapture(2)
+            else:
+                cap = cv2.VideoCapture(0)
             success, frame = cap.read()
+        else:
+            success, frame = cap.read()
+        if detectionStatus == 1:
             if not success:
                 break
-            results = model.predict(frame, conf=0.1, show=False, line_width=2, verbose=False, iou= 0.01)[0]
+            results = model.predict(frame, conf=0.1, show=False, line_width=2, verbose=False, iou= 0.4)[0]
             detections = sv.Detections.from_ultralytics(results)
             bounding_box_annotator = sv.BoundingBoxAnnotator(color=sv.ColorPalette.from_hex(['#00ff22']))
             annotated_frame = bounding_box_annotator.annotate(
                 scene=frame.copy(),
                 detections=detections
             )
+            for i, bbox in enumerate(detections.xyxy):
+                bbox_center = (bbox[0] + bbox[2]) / 2
+                frame_third = annotated_frame.shape[1] / 3
+                if bbox_center < frame_third:
+                    left =1
+                elif bbox_center < 2 * frame_third:
+                    middle = 1
+                else:
+                    right = 1
+                location = [left, middle, right]
             ret, buffer = cv2.imencode('.jpg', annotated_frame)
-            print(i,"run")
             i += 1
-            annotated_frame = buffer.tobytes()
-            yield (b'--frame\r\n'b'Content-Type: image/jpeg\r\n\r\n' + annotated_frame + b'\r\n')
+            frame = buffer.tobytes()
         else:
-            success, frame = cap.read()
+            location = [0, 0, 0]
             if not success:
                 break
             ret, buffer = cv2.imencode('.jpg', frame)
             frame = buffer.tobytes()
-            yield (b'--frame\r\n'b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-
+        yield (b'--frame\r\n'b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 @app.route('/detection')
 def video_detection():
     global detectionStatus
-    detectionStatus = request.args.get('detectionStatus', default = 1, type = int)
     return Response(detection(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
-
-# create one api endpoint to get detectection status
+@app.route('/start-detect')
+def start_detect():
+    global detectionStatus
+    detectionStatus = 1
+    return "Detection started"
+@app.route('/stop-detect')
+def stop_detect():
+    global detectionStatus
+    detectionStatus = 0
+    return "Detection stopped"
+@app.route('/swap-camera')
+def swap_camera():
+    global cam, cap
+    if cam :
+        cam = False
+    else:
+        cam = True
+    if(cam):
+        cap = cv2.VideoCapture(2)
+    else:
+        cap = cv2.VideoCapture(0)
+    return "Camera swapped"
 @app.route('/detectionStatus')
 def get_detection_status():
     global detectionStatus
     return {'detectionStatus': detectionStatus}
-
-
+@app.route('/location')
+def get_location():
+    global location
+    return {'location': location}
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, threaded=True)
