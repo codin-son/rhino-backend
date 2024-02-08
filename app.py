@@ -1,4 +1,4 @@
-from flask import Flask, Response, request
+from flask import Flask, Response
 import cv2  # OpenCV for video processing
 from flask_cors import CORS
 from ultralytics import YOLO
@@ -12,9 +12,11 @@ middle = 0
 right = 0
 cam = False
 cap =None
+model =None
+
 def detection():
-    global detectionStatus, location, left, middle, right, cam, cap
-    model = YOLO("bestv2.pt")
+    global detectionStatus, location, left, middle, right, cam, cap,model
+    model = None
     i = 1
     while True:
         left = 0
@@ -22,16 +24,18 @@ def detection():
         right = 0
         if cap is None:
             if(cam):
-                cap = cv2.VideoCapture(2)
+                cap = cv2.VideoCapture("http://192.168.88.2:8081/stream")
             else:
-                cap = cv2.VideoCapture(0)
+                cap = cv2.VideoCapture("http://192.168.88.2:8082/stream")
             success, frame = cap.read()
         else:
             success, frame = cap.read()
         if detectionStatus == 1:
             if not success:
                 break
-            results = model.predict(frame, conf=0.1, show=False, line_width=2, verbose=False, iou= 0.4)[0]
+            if model is None:
+                model = YOLO("bestv2.pt")
+            results = model.predict(frame, conf=0.1, show=False, verbose=True, iou= 0.4)[0]
             detections = sv.Detections.from_ultralytics(results)
             bounding_box_annotator = sv.BoundingBoxAnnotator(color=sv.ColorPalette.from_hex(['#00ff22']))
             annotated_frame = bounding_box_annotator.annotate(
@@ -65,13 +69,16 @@ def video_detection():
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 @app.route('/start-detect')
 def start_detect():
-    global detectionStatus
+    global detectionStatus, model
     detectionStatus = 1
+    if(detectionStatus == 1):
+        model = YOLO("bestv2.pt")
     return "Detection started"
 @app.route('/stop-detect')
 def stop_detect():
-    global detectionStatus
+    global detectionStatus,model
     detectionStatus = 0
+    model=None
     return "Detection stopped"
 @app.route('/swap-camera')
 def swap_camera():
@@ -81,9 +88,9 @@ def swap_camera():
     else:
         cam = True
     if(cam):
-        cap = cv2.VideoCapture(2)
+        cap = cv2.VideoCapture("http://192.168.88.2:8082/stream")
     else:
-        cap = cv2.VideoCapture(0)
+        cap = cv2.VideoCapture("http://192.168.88.2:8081/stream")
     return "Camera swapped"
 @app.route('/detectionStatus')
 def get_detection_status():
@@ -94,4 +101,4 @@ def get_location():
     global location
     return {'location': location}
 if __name__ == '__main__':
-    app.run(debug=True, threaded=True)
+    app.run(host='0.0.0.0',debug=True, threaded=True)
