@@ -1,9 +1,10 @@
 from flask import Flask, Response
-import cv2  # OpenCV for video processing
+import cv2
 from flask_cors import CORS
 from ultralytics import YOLO
 import supervision as sv
 import urllib.error
+
 class App:
     def __init__(self):
         self.detection_status = 0
@@ -11,67 +12,72 @@ class App:
         self.cam = False
         self.cap = None
         self.model = None
-
-    
+    def initialize_stream(self):
+        url = 0 if self.cam else 2
+        self.cap = cv2.VideoCapture(url)
 
     def read_frame(self):
-        try:
-            if self.cap is None:
-                url = "http://127.0.0.1:8082/stream" if self.cam else "http://127.0.0.1:8084/stream"
-                self.cap = cv2.VideoCapture(url)
-            success, frame = self.cap.read()
-            if not success or frame is None:
-                raise cv2.error("Stream timeout or overread error")
-            return success, frame
-        except (cv2.error, urllib.error.URLError) as e:
-            print(f"An error occurred while reading from the video stream: {e}")
-            if self.cap is not None:
-                self.cap.release()  # Close the current VideoCapture
-                self.cap = None  # Set to None so a new VideoCapture will be created on the next read_frame call
+        if self.cap is None:
+            self.initialize_stream()
+        success, frame = self.cap.read()
+        if not success or frame is None:
+            print("Stream timeout or overread error")
+            self.cap.release()
+            self.cap = None
             return None, None
-        
+        return success, frame
+    def load_model(self):
+        try:
+            if self.model is None:
+                print("Attempting to load model...")
+                self.model = YOLO("/home/a2tech/Desktop/pojek-rhino/rhino-backend/bestv2.pt")  # Consider using an absolute path
+                print("Model loaded successfully.")
+        except Exception as e:
+            print(f"Failed to load model due to: {e}")
+
+
     def detection(self):
-        self.model = None
-        i = 1
+        if self.detection_status == 1 and self.model is None:
+            self.load_model()
+
         while True:
-            left = 0
-            middle = 0
-            right = 0
+            frame_bytes = None  # Initialize frame_bytes at the start of the loop
             success, frame = self.read_frame()
             if not success or frame is None:
                 continue
             if self.detection_status == 1:
-                if not success or frame is None:
-                    break
-                if self.model is None:
-                    self.model = YOLO("bestv2.pt")
-                results = self.model.predict(frame, conf=0.1, show=False, verbose=False, iou= 0.4)[0]
-                detections = sv.Detections.from_ultralytics(results)
-                bounding_box_annotator = sv.BoundingBoxAnnotator(color=sv.ColorPalette.from_hex(['#f00000']), thickness=4)
-                annotated_frame = bounding_box_annotator.annotate(
-                    scene=frame.copy(),
-                    detections=detections
-                )
-                for i, bbox in enumerate(detections.xyxy):
-                    bbox_center = (bbox[0] + bbox[2]) / 2
-                    frame_third = annotated_frame.shape[1] / 3
-                    if bbox_center < frame_third:
-                        left =1
-                    elif bbox_center < 2 * frame_third:
-                        middle = 1
-                    else:
-                        right = 1
-                    self.location = [left, middle, right]
-                ret, buffer = cv2.imencode('.jpg', annotated_frame)
-                i += 1
-                frame = buffer.tobytes()
+                
+                if self.model is not None:
+                    results = self.model.predict(frame, conf=0.1, show=False, verbose=False, iou=0.4)[0]
+                    detections = sv.Detections.from_ultralytics(results)
+                    annotated_frame = self.annotate_frame(frame, detections)
+                    frame_bytes = self.frame_to_bytes(annotated_frame)
+                else:
+                    print("Model is not loaded, skipping frame processing.")
+                    self.load_model()
+                    # Optionally, handle the case where frame processing is skipped
             else:
-                self.location = [0, 0, 0]
-                if not success:
-                    break
-                ret, buffer = cv2.imencode('.jpg', frame)
-                frame = buffer.tobytes()
-            yield (b'--frame\r\n'b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                self.model = None 
+                # Ensure there's a branch that assigns a value to frame_bytes even if detection_status is not 1
+                # For example, convert the original frame to bytes if no detection is performed
+                frame_bytes = self.frame_to_bytes(frame) if frame is not None else None
+
+            # Only yield frame_bytes if it's not None
+            if frame_bytes is not None:
+                yield self.format_frame(frame_bytes)
+
+
+    def annotate_frame(self, frame, detections):
+        bounding_box_annotator = sv.BoundingBoxAnnotator(color=sv.ColorPalette.from_hex(['#f00000']), thickness=4)
+        return bounding_box_annotator.annotate(scene=frame.copy(), detections=detections)
+
+    def frame_to_bytes(self, frame):
+        ret, buffer = cv2.imencode('.jpg', frame)
+        return buffer.tobytes()
+
+    def format_frame(self, frame_bytes):
+        return (b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
 app = Flask(__name__)
 CORS(app)
@@ -86,20 +92,18 @@ def video_detection():
 @app.route('/start-detect')
 def start_detect():
     app_state.detection_status = 1
-    if app_state.detection_status == 1:
-        app_state.model = YOLO("bestv2.pt")
     return "Detection started"
 
 @app.route('/stop-detect')
 def stop_detect():
     app_state.detection_status = 0
-    app_state.model = None
+    app_state.model = None  # Ensuring model is cleared when detection stops
     return "Detection stopped"
 
 @app.route('/swap-camera')
 def swap_camera():
     app_state.cam = not app_state.cam
-    app_state.cap = None
+    app_state.cap = None  # Force to refresh the video capture in the next frame read
     return "Camera swapped"
 
 @app.route('/detectionStatus')
@@ -111,4 +115,4 @@ def get_location():
     return {'location': app_state.location}
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', threaded=True)
+    app.run(host='0.0.0.0', threaded=True, port=9099)
